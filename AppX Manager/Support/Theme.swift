@@ -90,6 +90,8 @@ enum Theme {
 
         static let rowCheckboxWidth: CGFloat = 32
         static let rowIconWidth: CGFloat = 34
+        static let rowIconSize: CGFloat = 32
+        static let rowSizeWidth: CGFloat = 84
         static let rowInstalledWidth: CGFloat = 100
         static let rowLatestWidth: CGFloat = 100
         static let rowActionWidth: CGFloat = 190

@@ -5,50 +5,86 @@
 
 import Foundation
 
-/// `mas` relies on undocumented App Store internals and can break after macOS
-/// updates (or simply not be installed) — every call here degrades to an empty,
-/// non-fatal result rather than throwing out into the shared scan.
+/// App Store apps are detected primarily via each app's own install receipt
+/// (`Contents/_MASReceipt/receipt`) — this works with zero external dependencies,
+/// unlike shelling out to `mas`. The `mas` CLI (if installed) is used ADDITIONALLY
+/// to check for available updates; `mas` relies on undocumented App Store
+/// internals and can break after macOS updates, so every `mas` call degrades
+/// gracefully rather than throwing out into the shared scan.
 enum MasScanner {
-    static private(set) var isAvailable = true
+    /// Whether `mas` is available for update-checking — independent of whether
+    /// any App Store apps were found via receipts.
+    static private(set) var isMasCLIAvailable = true
 
     static func scan() async -> [InstalledItem] {
-        guard let listResult = try? await ShellRunner.run("mas", ["list"]), listResult.exitCode == 0 else {
-            isAvailable = false
-            return []
+        let apps = discoverReceiptApps()
+
+        var outdated: [String: String] = [:]
+        if let outdatedResult = try? await ShellRunner.run("mas", ["outdated"]), outdatedResult.exitCode == 0 {
+            isMasCLIAvailable = true
+            outdated = parseOutdated(outdatedResult.stdout)
+        } else {
+            isMasCLIAvailable = false
         }
-        isAvailable = true
 
-        let outdated = (try? await ShellRunner.run("mas", ["outdated"])).map { parseOutdated($0.stdout) } ?? [:]
-
-        var items: [InstalledItem] = []
-        for substring in listResult.stdout.split(separator: "\n") {
-            let line = String(substring)
-            guard let firstSpace = line.firstIndex(of: " "),
-                  let openParen = line.lastIndex(of: "("), let closeParen = line.lastIndex(of: ")") else { continue }
-            let id = String(line[line.startIndex..<firstSpace])
-            let name = String(line[line.index(after: firstSpace)..<openParen]).trimmingCharacters(in: .whitespaces)
-            let installedVersion = String(line[line.index(after: openParen)..<closeParen]).trimmingCharacters(in: .whitespaces)
-            let latest = outdated[id]
-            let path = "/Applications/\(name).app"
-            items.append(InstalledItem(
-                id: "mas:\(id)",
-                name: name,
-                description: "Mac App Store app",
+        return apps.map { app in
+            let latest = outdated[app.name]
+            let status: UpdateStatus = latest != nil ? .updateAvailable : (isMasCLIAvailable ? .upToDate : .unknown)
+            return InstalledItem(
+                id: "mas:\(app.bundleId)",
+                name: app.name,
+                description: isMasCLIAvailable ? "Mac App Store app" : "Mac App Store app · install mas to check for updates",
                 source: .appStore,
                 provider: .appStore,
                 developer: "App Store",
-                installedVersion: installedVersion,
+                installedVersion: app.installedVersion,
                 latestVersion: latest,
-                status: latest != nil ? .updateAvailable : .upToDate,
-                sizeBytes: DiskUsage.size(atPath: path),
-                installDate: DiskUsage.creationDate(atPath: path),
-                bundleId: Bundle(path: path)?.bundleIdentifier ?? "mas.\(id)",
-                path: path,
+                status: status,
+                sizeBytes: DiskUsage.size(atPath: app.path),
+                installDate: DiskUsage.creationDate(atPath: app.path),
+                bundleId: app.bundleId,
+                path: app.path,
                 history: latest.map { [VersionEntry(version: $0, date: Date())] } ?? [],
                 homepageURL: nil
-            ))
+            )
         }
-        return items
+    }
+
+    /// Installs `mas` via Homebrew — an explicit, user-triggered action, never automatic.
+    static func installCLI() async throws {
+        let result = try await ShellRunner.run("brew", ["install", "mas"], timeout: 300)
+        guard result.exitCode == 0 else {
+            throw UpdaterError.commandFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
+        }
+        isMasCLIAvailable = true
+    }
+
+    private struct ReceiptApp {
+        let name: String
+        let bundleId: String
+        let path: String
+        let installedVersion: String
+    }
+
+    private static func discoverReceiptApps() -> [ReceiptApp] {
+        let applicationsURL = URL(fileURLWithPath: "/Applications")
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: applicationsURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return entries.compactMap { url -> ReceiptApp? in
+            guard url.pathExtension == "app" else { return nil }
+            let receiptPath = url.appendingPathComponent("Contents/_MASReceipt/receipt").path
+            guard FileManager.default.fileExists(atPath: receiptPath),
+                  let bundle = Bundle(url: url), let bundleId = bundle.bundleIdentifier else { return nil }
+            let info = bundle.infoDictionary ?? [:]
+            let name = (info["CFBundleDisplayName"] as? String)
+                ?? (info["CFBundleName"] as? String)
+                ?? url.deletingPathExtension().lastPathComponent
+            let version = (info["CFBundleShortVersionString"] as? String)
+                ?? (info["CFBundleVersion"] as? String) ?? "—"
+            return ReceiptApp(name: name, bundleId: bundleId, path: url.path, installedVersion: version)
+        }
     }
 
     /// `mas outdated` lines look like `<id> AppName (installed -> latest)`.
@@ -59,10 +95,9 @@ enum MasScanner {
             guard let firstSpace = line.firstIndex(of: " "),
                   let openParen = line.lastIndex(of: "("), let closeParen = line.lastIndex(of: ")"),
                   let arrow = line.range(of: "->") else { continue }
-            let id = String(line[line.startIndex..<firstSpace])
-            let versions = String(line[line.index(after: openParen)..<closeParen])
-            let latest = String(versions[arrow.upperBound...]).trimmingCharacters(in: .whitespaces)
-            result[id] = latest
+            let name = String(line[line.index(after: firstSpace)..<openParen]).trimmingCharacters(in: .whitespaces)
+            let latest = String(line[arrow.upperBound..<closeParen]).trimmingCharacters(in: .whitespaces)
+            result[name] = latest
         }
         return result
     }

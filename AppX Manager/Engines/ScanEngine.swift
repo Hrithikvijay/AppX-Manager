@@ -5,6 +5,7 @@
 
 import Foundation
 import Observation
+import AppKit
 
 enum ScanStep: CaseIterable {
     case applications, appStore, homebrew, npm, pip, gem
@@ -50,14 +51,20 @@ final class ScanEngine {
 
     /// Runs each source sequentially so the Scanning screen can show one active
     /// step at a time, matching the design (spec §7's "sequentially marks each
-    /// source as done").
+    /// source as done"). Guards against re-entrant calls (e.g. a rescan tap
+    /// landing while onboarding/appear-driven scans are already in flight),
+    /// which would otherwise run every scanner twice concurrently.
     func scan() async {
+        guard !isScanning else {
+            DebugLog.log("SCAN SKIPPED: already scanning")
+            return
+        }
         isScanning = true
         completedSteps = []
 
         currentStep = .appStore
         let masItems = await MasScanner.scan()
-        masAvailable = MasScanner.isAvailable
+        masAvailable = MasScanner.isMasCLIAvailable
         completedSteps.insert(.appStore)
 
         currentStep = .homebrew
@@ -106,18 +113,27 @@ final class ScanEngine {
         failedIDs.remove(id)
         updatingIDs.insert(id)
         items[index].status = .updating
+        DebugLog.log("UPDATE START: \(item.name) [\(item.provider)] \(item.installedVersion) -> \(item.latestVersion ?? "?")")
 
         do {
             try await updater(for: item.provider).update(item)
             if let refreshedIndex = items.firstIndex(where: { $0.id == id }) {
-                items[refreshedIndex].status = .upToDate
-                items[refreshedIndex].installedVersion = item.latestVersion ?? item.installedVersion
+                // Opening a Sparkle app doesn't confirm the update actually ran —
+                // leave its status alone rather than claiming a false success.
+                if item.provider != .sparkle {
+                    items[refreshedIndex].status = .upToDate
+                    items[refreshedIndex].installedVersion = item.latestVersion ?? item.installedVersion
+                } else {
+                    items[refreshedIndex].status = .updateAvailable
+                }
             }
+            DebugLog.log("UPDATE SUCCEEDED: \(item.name)")
         } catch {
             if let refreshedIndex = items.firstIndex(where: { $0.id == id }) {
                 items[refreshedIndex].status = .failed
             }
             failedIDs.insert(id)
+            DebugLog.log("UPDATE FAILED: \(item.name) — \(error.localizedDescription)")
         }
         updatingIDs.remove(id)
     }
@@ -129,19 +145,27 @@ final class ScanEngine {
         case .pip: PipUpdaterAdapter()
         case .gem: GemUpdaterAdapter()
         case .appStore: MasUpdaterAdapter()
-        case .sparkle, .caskFallback, .unmanaged: UnsupportedUpdaterAdapter()
+        case .sparkle: SparkleUpdaterAdapter()
+        case .caskFallback, .unmanaged: UnsupportedUpdaterAdapter()
         }
     }
 
     // MARK: - Batch updates
 
+    /// Sparkle apps open their own updater UI (shouldn't happen unattended in a
+    /// batch) and cask-fallback matches require the explicit "Adopt" action first
+    /// — neither belongs in an automatic Update All/Selected run.
+    private func isBatchUpdatable(_ item: InstalledItem) -> Bool {
+        item.status == .updateAvailable && item.provider != .sparkle && item.provider != .caskFallback
+    }
+
     func updateAll() async {
-        let ids = items.filter { $0.status == .updateAvailable }.map(\.id)
+        let ids = items.filter { isBatchUpdatable($0) }.map(\.id)
         await runBatch(ids)
     }
 
     func updateSelected(_ ids: Set<String>) async {
-        let updatable = items.filter { ids.contains($0.id) && $0.status == .updateAvailable }.map(\.id)
+        let updatable = items.filter { ids.contains($0.id) && isBatchUpdatable($0) }.map(\.id)
         await runBatch(updatable)
     }
 
@@ -173,8 +197,11 @@ final class ScanEngine {
     /// Explicit opt-in action (spec §8) — never adopted silently.
     func adoptIntoHomebrew(_ id: String) async {
         guard let index = items.firstIndex(where: { $0.id == id }), let token = items[index].caskToken else { return }
+        failedIDs.remove(id)
+        updatingIDs.insert(id)
+        defer { updatingIDs.remove(id) }
         do {
-            let result = try await ShellRunner.run("brew", ["install", "--cask", token, "--force"])
+            let result = try await ShellRunner.run("brew", ["install", "--cask", token, "--force"], timeout: 900)
             guard result.exitCode == 0 else { throw UpdaterError.commandFailed(result.stderr) }
             items[index].provider = .homebrewCask
             items[index].source = .homebrew
@@ -182,8 +209,21 @@ final class ScanEngine {
             if let latest = items[index].latestVersion {
                 items[index].installedVersion = latest
             }
+            DebugLog.log("ADOPT SUCCEEDED: \(items[index].name) -> homebrew cask \(token)")
         } catch {
             failedIDs.insert(id)
+            DebugLog.log("ADOPT FAILED: cask \(token) — \(error.localizedDescription)")
+        }
+    }
+
+    /// User-triggered install of the `mas` CLI via Homebrew, then a full rescan
+    /// so newly-checkable App Store apps pick up real update status.
+    func installMasCLI() async {
+        do {
+            try await MasScanner.installCLI()
+            await scan()
+        } catch {
+            masAvailable = false
         }
     }
 }
@@ -202,6 +242,16 @@ private struct GemUpdaterAdapter: ItemUpdating {
 }
 private struct MasUpdaterAdapter: ItemUpdating {
     func update(_ item: InstalledItem) async throws { try await MasUpdater.update(item) }
+}
+/// Sparkle-based apps ship their own in-app updater — the cleanest, most
+/// reliable path is to launch the app itself rather than reimplement its
+/// installation (spec §8), so "Update" here just opens it.
+private struct SparkleUpdaterAdapter: ItemUpdating {
+    func update(_ item: InstalledItem) async throws {
+        guard NSWorkspace.shared.open(URL(fileURLWithPath: item.path)) else {
+            throw UpdaterError.commandFailed("Couldn't open \(item.name).")
+        }
+    }
 }
 private struct UnsupportedUpdaterAdapter: ItemUpdating {
     func update(_ item: InstalledItem) async throws { throw UpdaterError.unsupported }

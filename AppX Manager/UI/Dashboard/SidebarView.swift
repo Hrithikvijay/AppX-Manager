@@ -10,6 +10,7 @@ struct SidebarView: View {
     let items: [InstalledItem]
     @Binding var filter: SidebarFilter
     let needsUpdateCount: Int
+    let updatingCount: Int
 
     private var sourceCounts: [Source: Int] {
         Dictionary(grouping: items, by: \.source).mapValues(\.count)
@@ -23,6 +24,11 @@ struct SidebarView: View {
             }
             row(label: "Needs update", glyph: "exclamationmark", tint: palette.danger, count: needsUpdateCount, isSelected: filter == .needsUpdate, badgeIsAccent: true) {
                 filter = .needsUpdate
+            }
+            if updatingCount > 0 {
+                row(label: "Updating", glyph: "arrow.triangle.2.circlepath", tint: palette.accent, count: updatingCount, isSelected: filter == .updating) {
+                    filter = .updating
+                }
             }
 
             Divider()
@@ -112,5 +118,5 @@ struct SidebarView: View {
 }
 
 #Preview {
-    SidebarView(items: [], filter: .constant(.all), needsUpdateCount: 0)
+    SidebarView(items: [], filter: .constant(.all), needsUpdateCount: 0, updatingCount: 0)
 }

@@ -22,6 +22,10 @@ enum SparkleScanner {
         for app in apps {
             items.append(await makeItem(for: app))
         }
+        let sparkleCount = items.filter { $0.provider == .sparkle }.count
+        let caskCount = items.filter { $0.provider == .caskFallback }.count
+        let unknownCount = items.filter { $0.provider == .unmanaged }.count
+        DebugLog.log("DIRECT-DOWNLOAD SCAN: \(items.count) apps — \(sparkleCount) sparkle, \(caskCount) cask-matched, \(unknownCount) unknown")
         return items
     }
 
@@ -99,14 +103,18 @@ enum SparkleScanner {
     }
 
     /// Fetches and parses a Sparkle appcast, returning the first (conventionally
-    /// newest) `sparkle:version`/`sparkle:shortVersionString` found.
+    /// newest) `sparkle:version`/`sparkle:shortVersionString` found. Runs on an
+    /// independent detached task so it isn't silently cancelled if the calling
+    /// scan chain gets cancelled/restarted (see CaskFallbackMatcher.catalog()).
     private static func latestVersion(fromAppcast url: URL) async -> String? {
-        guard let (data, _) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 8)) else { return nil }
-        let parser = AppcastParser()
-        let xmlParser = XMLParser(data: data)
-        xmlParser.delegate = parser
-        guard xmlParser.parse() else { return nil }
-        return parser.latestVersion
+        await Task.detached(priority: .utility) {
+            guard let (data, _) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 8)) else { return nil }
+            let parser = AppcastParser()
+            let xmlParser = XMLParser(data: data)
+            xmlParser.delegate = parser
+            guard xmlParser.parse() else { return nil }
+            return parser.latestVersion
+        }.value
     }
 
     private final class AppcastParser: NSObject, XMLParserDelegate {

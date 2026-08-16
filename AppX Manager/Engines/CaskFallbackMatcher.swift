@@ -16,14 +16,38 @@ enum CaskFallbackMatcher {
 
     private static var cachedCatalog: [[String: Any]]?
 
+    /// Runs the fetch on an independent detached task — the calling scan chain
+    /// gets re-triggered/cancelled more often than expected (still being tracked
+    /// down), which was silently cancelling this ~19MB download every time and
+    /// making every direct-download app show as "Unknown". A detached task has
+    /// no parent/child relationship to the caller, so it isn't affected by that.
     private static func catalog() async -> [[String: Any]] {
         if let cachedCatalog { return cachedCatalog }
-        guard let url = URL(string: "https://formulae.brew.sh/api/cask.json"),
-              let (data, _) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 15)),
-              let decoded = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        let decoded = await Task.detached(priority: .utility) { await fetchCatalog() }.value
+        if !decoded.isEmpty { cachedCatalog = decoded }
+        return decoded
+    }
+
+    private static func fetchCatalog() async -> [[String: Any]] {
+        guard let url = URL(string: "https://formulae.brew.sh/api/cask.json") else {
+            DebugLog.log("CASK CATALOG: invalid URL")
             return []
         }
-        cachedCatalog = decoded
+
+        let data: Data
+        do {
+            (data, _) = try await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 30))
+        } catch {
+            DebugLog.log("CASK CATALOG FETCH FAILED: \(error.localizedDescription)")
+            return []
+        }
+
+        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            DebugLog.log("CASK CATALOG PARSE FAILED: got \(data.count) bytes, couldn't decode as [[String: Any]]")
+            return []
+        }
+
+        DebugLog.log("CASK CATALOG OK: \(decoded.count) casks, \(data.count) bytes")
         return decoded
     }
 

@@ -16,6 +16,9 @@ struct AppRowView: View {
     let onUpdate: () -> Void
     let onRetry: () -> Void
     let onVisitSite: () -> Void
+    let onAdopt: () -> Void
+
+    @State private var showAdoptConfirmation = false
 
     private var initials: String {
         let letters = item.name.filter(\.isLetter).prefix(2)
@@ -29,6 +32,10 @@ struct AppRowView: View {
         case .direct: Theme.SourceColor.directDownload
         case .devTools: Theme.SourceColor.devTools
         }
+    }
+
+    private var formattedSize: String {
+        item.sizeBytes > 0 ? ByteCountFormatter.string(fromByteCount: item.sizeBytes, countStyle: .file) : "—"
     }
 
     var body: some View {
@@ -53,8 +60,9 @@ struct AppRowView: View {
             Text(initials)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: Theme.Layout.rowIconWidth, height: 32)
+                .frame(width: Theme.Layout.rowIconSize, height: Theme.Layout.rowIconSize)
                 .background(sourceTint, in: RoundedRectangle(cornerRadius: 8))
+                .frame(width: Theme.Layout.rowIconWidth)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name)
@@ -73,6 +81,12 @@ struct AppRowView: View {
                     .background(palette.tagBackground, in: RoundedRectangle(cornerRadius: 4))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(formattedSize)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(palette.textSecondary)
+                .lineLimit(1)
+                .frame(width: Theme.Layout.rowSizeWidth, alignment: .trailing)
 
             Text(item.installedVersion)
                 .font(.system(size: 12, design: .monospaced))
@@ -106,6 +120,16 @@ struct AppRowView: View {
         .contentShape(Rectangle())
         .background(isSelected ? palette.rowSelectedBackground : Color.clear)
         .onTapGesture(perform: onOpen)
+        .confirmationDialog(
+            "Adopt \(item.name) into Homebrew?",
+            isPresented: $showAdoptConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Adopt", action: onAdopt)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Future updates for \(item.name) will run through Homebrew instead of its original installer.")
+        }
     }
 
     @ViewBuilder
@@ -124,11 +148,17 @@ struct AppRowView: View {
             }
         } else {
             switch item.status {
+            case .updateAvailable where item.provider == .caskFallback:
+                Button("Adopt…") { showAdoptConfirmation = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Match found in Homebrew — adopt to enable automatic updates.")
             case .updateAvailable:
                 Button("Update", action: onUpdate)
                     .buttonStyle(.borderedProminent)
                     .tint(palette.accent)
                     .controlSize(.small)
+                    .help(item.provider == .sparkle ? "Opens \(item.name) so its built-in updater can run." : "Update")
             case .upToDate:
                 Text("Up to date")
                     .font(.system(size: 11.5, weight: .semibold))
@@ -137,10 +167,16 @@ struct AppRowView: View {
                     .padding(.vertical, 3)
                     .background(palette.rowSelectedBackground, in: RoundedRectangle(cornerRadius: 5))
             case .unknown:
-                Button("Visit site", action: onVisitSite)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.accent)
+                if item.homepageURL != nil {
+                    Button("Visit site", action: onVisitSite)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.accent)
+                } else {
+                    Text(item.provider == .appStore ? "Install mas to check" : "Unknown")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(palette.textTertiary)
+                }
             case .updating, .failed:
                 EmptyView()
             }
@@ -157,6 +193,7 @@ struct AppRowView: View {
             history: [], homepageURL: nil
         ),
         isSelected: false, isUpdating: false, isFailed: false,
-        onToggleSelect: {}, onOpen: {}, onUpdate: {}, onRetry: {}, onVisitSite: {}
+        onToggleSelect: {}, onOpen: {}, onUpdate: {}, onRetry: {}, onVisitSite: {}, onAdopt: {}
     )
 }
+
