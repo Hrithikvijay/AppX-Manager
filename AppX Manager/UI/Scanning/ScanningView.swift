@@ -8,22 +8,15 @@ import SwiftUI
 struct ScanningView: View {
     @Environment(\.colorScheme) private var colorScheme
     var scanEngine: ScanEngine
-    @State private var rotation: Double = 0
 
     var body: some View {
         let palette = Theme.palette(for: colorScheme)
         VStack(spacing: 6) {
-            Circle()
-                .trim(from: 0, to: 0.25)
-                .stroke(palette.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                .frame(width: 32, height: 32)
-                .rotationEffect(.degrees(rotation))
+            ProgressView()
+                .controlSize(.large)
+                .scaleEffect(1.4)
+                .tint(palette.accent)
                 .padding(.bottom, 14)
-                .onAppear {
-                    withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                        rotation = 360
-                    }
-                }
 
             Text("Scanning your Mac…")
                 .font(.system(size: 16, weight: .bold))
