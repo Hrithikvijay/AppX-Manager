@@ -8,22 +8,40 @@ import Foundation
 /// Best-effort match of a `/Applications` app with no Sparkle feed against
 /// Homebrew's public cask catalog, by app/artifact name (not bundle id — the
 /// public cask API doesn't reliably expose one for reverse lookup).
-enum CaskFallbackMatcher {
+///
+/// An actor (not a plain enum) because direct-download items are now classified
+/// concurrently (see `SparkleScanner.scan`) — dozens of calls to `match(appName:)`
+/// can land at once, and the catalog cache/in-flight fetch must be shared rather
+/// than each concurrent caller racing past a `nil` check and re-fetching the
+/// ~19MB catalog for itself.
+actor CaskFallbackMatcher {
+    static let shared = CaskFallbackMatcher()
+
     struct Match {
         let token: String
         let latestVersion: String
     }
 
-    private static var cachedCatalog: [[String: Any]]?
+    private var cachedCatalog: [[String: Any]]?
+    private var inFlightFetch: Task<[[String: Any]], Never>?
 
-    /// Runs the fetch on an independent detached task — the calling scan chain
-    /// gets re-triggered/cancelled more often than expected (still being tracked
-    /// down), which was silently cancelling this ~19MB download every time and
-    /// making every direct-download app show as "Unknown". A detached task has
-    /// no parent/child relationship to the caller, so it isn't affected by that.
-    private static func catalog() async -> [[String: Any]] {
+    private init() {}
+
+    /// Runs the actual fetch on an independent detached task — the calling scan
+    /// chain gets re-triggered/cancelled more often than expected (still being
+    /// tracked down), which was silently cancelling this ~19MB download every
+    /// time and making every direct-download app show as "Unknown". A detached
+    /// task has no parent/child relationship to the caller, so it isn't
+    /// affected by that. Concurrent callers await the same in-flight fetch
+    /// instead of each starting their own.
+    private func catalog() async -> [[String: Any]] {
         if let cachedCatalog { return cachedCatalog }
-        let decoded = await Task.detached(priority: .utility) { await fetchCatalog() }.value
+        if let inFlightFetch { return await inFlightFetch.value }
+
+        let task = Task.detached(priority: .utility) { await Self.fetchCatalog() }
+        inFlightFetch = task
+        let decoded = await task.value
+        inFlightFetch = nil
         if !decoded.isEmpty { cachedCatalog = decoded }
         return decoded
     }
@@ -53,7 +71,7 @@ enum CaskFallbackMatcher {
 
     /// Matches by exact (case-insensitive) app-bundle filename in a cask's
     /// `artifacts: [{app: [...]}]` list, or by the cask's display name.
-    static func match(appName: String) async -> Match? {
+    func match(appName: String) async -> Match? {
         let target = appName.lowercased()
         let targetAppFile = "\(target).app"
         for entry in await catalog() {
@@ -75,7 +93,7 @@ enum CaskFallbackMatcher {
 
     /// Cask versions are sometimes `"1.2.3,buildid"` — only the part before the
     /// comma is the human-meaningful version.
-    private static func primaryVersion(_ raw: String) -> String {
+    private func primaryVersion(_ raw: String) -> String {
         guard let comma = raw.firstIndex(of: ",") else { return raw }
         return String(raw[raw.startIndex..<comma])
     }

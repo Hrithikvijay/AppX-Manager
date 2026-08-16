@@ -46,19 +46,30 @@ final class ScanEngine {
     var isBatchUpdating: Bool { batchTotal > 0 }
 
     private let updateConcurrencyLimit = 3
+    private var inFlightScan: Task<Void, Never>?
 
     // MARK: - Scanning
 
     /// Runs each source sequentially so the Scanning screen can show one active
     /// step at a time, matching the design (spec §7's "sequentially marks each
-    /// source as done"). Guards against re-entrant calls (e.g. a rescan tap
-    /// landing while onboarding/appear-driven scans are already in flight),
-    /// which would otherwise run every scanner twice concurrently.
+    /// source as done"). Safe to call concurrently/redundantly (e.g. a rescan
+    /// tap landing while an appear-driven scan is already in flight) — a second
+    /// caller AWAITS the same in-progress scan instead of either duplicating
+    /// the work or (the previous bug) returning immediately with stale/empty
+    /// results while the real scan is still running, which made the caller
+    /// navigate to a still-empty dashboard.
     func scan() async {
-        guard !isScanning else {
-            DebugLog.log("SCAN SKIPPED: already scanning")
+        if let inFlightScan {
+            await inFlightScan.value
             return
         }
+        let task = Task { await performScan() }
+        inFlightScan = task
+        await task.value
+        inFlightScan = nil
+    }
+
+    private func performScan() async {
         isScanning = true
         completedSteps = []
 

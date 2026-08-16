@@ -16,16 +16,27 @@ enum SparkleScanner {
 
     /// Enumerates `/Applications/*.app`, `scan(excludingBundleIds:excludingPaths:)`
     /// then classifies each as Sparkle-managed, cask-fallback-matched, or unknown.
+    /// Each app's classification involves its own network round-trips (appcast,
+    /// cask catalog match, App Store lookup), so items are built concurrently
+    /// rather than one-at-a-time to keep this scan step from scaling linearly
+    /// with the number of installed apps.
     static func scan(excludingBundleIds: Set<String>, excludingPaths: Set<String>) async -> [InstalledItem] {
         let apps = discoverApps(excludingBundleIds: excludingBundleIds, excludingPaths: excludingPaths)
-        var items: [InstalledItem] = []
-        for app in apps {
-            items.append(await makeItem(for: app))
+        var indexedItems = [(Int, InstalledItem)]()
+        await withTaskGroup(of: (Int, InstalledItem).self) { group in
+            for (index, app) in apps.enumerated() {
+                group.addTask { (index, await makeItem(for: app)) }
+            }
+            for await result in group {
+                indexedItems.append(result)
+            }
         }
+        let items = indexedItems.sorted { $0.0 < $1.0 }.map(\.1)
         let sparkleCount = items.filter { $0.provider == .sparkle }.count
         let caskCount = items.filter { $0.provider == .caskFallback }.count
-        let unknownCount = items.filter { $0.provider == .unmanaged }.count
-        DebugLog.log("DIRECT-DOWNLOAD SCAN: \(items.count) apps — \(sparkleCount) sparkle, \(caskCount) cask-matched, \(unknownCount) unknown")
+        let unknownItems = items.filter { $0.provider == .unmanaged }
+        let homepageCount = unknownItems.filter { $0.homepageURL != nil }.count
+        DebugLog.log("DIRECT-DOWNLOAD SCAN: \(items.count) apps — \(sparkleCount) sparkle, \(caskCount) cask-matched, \(unknownItems.count) unknown (\(homepageCount) with a discovered homepage link)")
         return items
     }
 
@@ -59,7 +70,7 @@ enum SparkleScanner {
         if let feedURL = feedURL(for: app.path), let feedLatest = await latestVersion(fromAppcast: feedURL) {
             latest = feedLatest
             provider = .sparkle
-        } else if let match = await CaskFallbackMatcher.match(appName: app.name) {
+        } else if let match = await CaskFallbackMatcher.shared.match(appName: app.name) {
             latest = match.latestVersion
             provider = .caskFallback
             caskToken = match.token
@@ -72,6 +83,14 @@ enum SparkleScanner {
             status = .updateAvailable
         } else {
             status = .upToDate
+        }
+
+        // No update mechanism found — still worth a verified (bundle-id-matched)
+        // App Store lookup so "Visit site" has somewhere real to go instead of
+        // nothing at all.
+        var homepageURL: URL?
+        if provider == .unmanaged {
+            homepageURL = await AppStoreLookup.homepageURL(appName: app.name, bundleId: app.bundleId)
         }
 
         return InstalledItem(
@@ -89,9 +108,7 @@ enum SparkleScanner {
             bundleId: app.bundleId,
             path: app.path,
             history: latest.map { [VersionEntry(version: $0, date: Date())] } ?? [],
-            // No standard Info.plist key reliably holds a developer homepage —
-            // left nil rather than guessing; the UI hides "Visit site" when nil.
-            homepageURL: nil,
+            homepageURL: homepageURL,
             caskToken: caskToken
         )
     }
