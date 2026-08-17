@@ -1,7 +1,8 @@
 # Prompt: update-context
 
 > Invoke after finishing or changing any feature work, before moving on / before committing.
-> In Copilot: type `/update-context` (this file is discovered as a prompt).
+> In Copilot: type `/update-context` (VS Code discovers the wrapper at
+> `.github/prompts/update-context.prompt.md`, which delegates to this file).
 > In other tools: paste this file's body as the instruction.
 >
 > **Scope guard: this prompt edits only `AI-Context/**` and the tool rule files (`CLAUDE.md`,

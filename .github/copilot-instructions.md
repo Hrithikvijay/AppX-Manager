@@ -61,7 +61,8 @@ Before working on any task in this repo, read in this order:
 3. `AI-Context/SDLC.md` — how we work, conventions, and where files go.
 4. The relevant `AI-Context/features/*.md` for the feature you're touching (if one exists yet).
 
-**After completing any change**, run the `update-context` prompt (Copilot: `/update-context`;
-otherwise follow `AI-Context/prompts/update-context.md`) to update the relevant feature file and
+**After completing any change**, run the `update-context` prompt (Copilot: `/update-context`,
+discovered via `.github/prompts/update-context.prompt.md`; otherwise follow
+`AI-Context/prompts/update-context.md` directly) to update the relevant feature file and
 the status table in `INDEX.md`. This is part of definition-of-done (see `AI-Context/SDLC.md`).
 Stale context is worse than none.
