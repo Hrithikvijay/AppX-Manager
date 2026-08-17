@@ -149,6 +149,16 @@ struct DetailPanelView: View {
                 ProgressView().controlSize(.small)
                 Text("Updating…").font(.system(size: 13)).foregroundStyle(palette.textSecondary)
             }
+        } else if item.status == .updateAvailable && item.provider == .sparkle {
+            VStack(spacing: 8) {
+                Text("AppX Manager can't update this app directly — it manages its own updates internally.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(palette.textTertiary)
+                    .multilineTextAlignment(.center)
+                Button("Open \(item.name) to Update", action: onUpdate)
+                    .buttonStyle(.borderedProminent)
+                    .tint(palette.accent)
+            }
         } else if item.status == .updateAvailable {
             Button("Update to \(item.latestVersion ?? "latest")", action: onUpdate)
                 .buttonStyle(.borderedProminent)

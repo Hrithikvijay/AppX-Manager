@@ -138,7 +138,7 @@ final class ScanEngine {
                     items[refreshedIndex].status = .updateAvailable
                 }
             }
-            DebugLog.log("UPDATE SUCCEEDED: \(item.name)")
+            DebugLog.log(item.provider == .sparkle ? "OPENED (sparkle, not confirmed updated): \(item.name)" : "UPDATE SUCCEEDED: \(item.name)")
         } catch {
             if let refreshedIndex = items.firstIndex(where: { $0.id == id }) {
                 items[refreshedIndex].status = .failed

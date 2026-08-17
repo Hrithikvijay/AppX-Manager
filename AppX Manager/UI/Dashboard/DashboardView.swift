@@ -167,6 +167,15 @@ struct DashboardView: View {
         }
         .animation(.easeOut(duration: 0.2), value: detailItemID)
         .background(palette.windowBackground)
+        // The "Updating" sidebar row only shows while updatingCount > 0, so once
+        // the last in-flight update finishes, jump back to "All apps" instead of
+        // stranding the user on a now-permanently-empty "Updating" filter with no
+        // visible way back.
+        .onChange(of: updatingCount) { _, newValue in
+            if newValue == 0 && filter == .updating {
+                filter = .all
+            }
+        }
     }
 
     private func toggleSelect(_ id: String) {

@@ -154,11 +154,11 @@ struct AppRowView: View {
                     .controlSize(.small)
                     .help("Match found in Homebrew — adopt to enable automatic updates.")
             case .updateAvailable:
-                Button("Update", action: onUpdate)
+                Button(item.provider == .sparkle ? "Open to Update" : "Update", action: onUpdate)
                     .buttonStyle(.borderedProminent)
                     .tint(palette.accent)
                     .controlSize(.small)
-                    .help(item.provider == .sparkle ? "Opens \(item.name) so its built-in updater can run." : "Update")
+                    .help(item.provider == .sparkle ? "AppX Manager can't update \(item.name) directly — this opens it so its built-in updater can run." : "Update")
             case .upToDate:
                 Text("Up to date")
                     .font(.system(size: 11.5, weight: .semibold))
